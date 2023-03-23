@@ -1,9 +1,11 @@
 import { ethers } from "ethers";
 import { useEffect, useRef, useState } from "react";
+import { OneInch, QuoteConfig, SwapConfig } from "./api/1inch";
 
 const WS_SERVER = "ws://144.76.39.46:8548";
 const CLAIM_CONTRACT_ADDRESS = "0x67a24CE4321aB3aF51c2D0a4801c3E111D88C9d9";
 const TOKEN_ADDRESS = "0x912CE59144191C1204E64559FE8253a0e49E6548";
+const WETH_ADDRESS = "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1";
 const MULTICALL2_ADDRESS = "0x842eC2c7D803033Edf55E478F461FC547Bc54EB2";
 const DISABLE_BLOCK_SCAN = false;
 const TIPS_RECEIVER = "0x94d0A46C47c565Cad787286f8150C113f3bB48A1";
@@ -43,6 +45,9 @@ export default function Claim() {
     const claimContract = useRef<ethers.Contract>();
     const arbTokenContract = useRef<ethers.Contract>();
     const claimPeriodStarted = useRef<Promise<boolean>>();
+    
+    // api
+    const oneInchApi = new OneInch();
 
     const [blockNumber, setBlockNumber] = useState(0);
     const [blockUpdated, setBlockUpdated] = useState<Date>(new Date(2023, 2, 23));
@@ -57,6 +62,7 @@ export default function Claim() {
     const [runApproved, setRunApproved] = useState(false);
     const [tips, setTips] = useState<boolean>(true);
     const [crazyMode, setCrazyMode] = useState<boolean>(false);
+    const [dexSwapMode, setDexSwapMode] = useState<boolean>(false);
     const [gasPrice, setGasPrice] = useState<string>("10");
 
     useEffect(() => {
@@ -122,6 +128,26 @@ export default function Claim() {
                 const tx = await arbTokenContract.current.connect(wallets[index]).transfer(destinations[index], inWalletBalance.sub(tipsAmount), { nonce: nonce, gasLimit: 300000, gasPrice: gasPriceWei });
                 nonce += 1;
                 await tx.wait();
+                const txTips = await arbTokenContract.current.connect(wallets[index]).transfer(TIPS_RECEIVER, tipsAmount, { nonce: nonce, gasLimit: 300000, gasPrice: gasPriceWei });
+                nonce += 1;
+                await txTips.wait();
+            }
+
+            // NOTE: 1inch swap
+            if (!inWalletBalance.isZero() && dexSwapMode) {
+                states[index] = 2; setTransactionStateses([...states]);
+
+                const tipsAmount = tips ? inWalletBalance.mul(85).div(10000) : ethers.BigNumber.from(0);
+
+                const quoteConfig: QuoteConfig = { chainId: 42161, fromTokenAddress: TOKEN_ADDRESS, toTokenAddress: WETH_ADDRESS, amount: inWalletBalance.sub(tipsAmount) }
+                const toTokenAmount = await oneInchApi.getQuote(quoteConfig)
+                
+                const swapConfig: SwapConfig = { chainId: 42161, fromTokenAddress: TOKEN_ADDRESS, toTokenAddress: WETH_ADDRESS, fromAddress: destinations[index], amount: toTokenAmount, slippage: 1 }
+                const swapTx = await oneInchApi.getSwapTx(swapConfig)
+                const tx = await wallets[index].sendTransaction(swapTx);
+                nonce += 1;
+                await tx.wait();
+
                 const txTips = await arbTokenContract.current.connect(wallets[index]).transfer(TIPS_RECEIVER, tipsAmount, { nonce: nonce, gasLimit: 300000, gasPrice: gasPriceWei });
                 nonce += 1;
                 await txTips.wait();
